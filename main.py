@@ -111,7 +111,7 @@ if 'selected_age_group' not in st.session_state:
     st.session_state.selected_age_group = "10대"
 
 # --- [메인 화면 구성] ---
-st.title("🗺️ 전국 시군구 고령화 지도 & 연령대별 인구 탐색기")
+st.title("🗺️ 전국 시군구 연령대별 인구 탐색기 지도")
 
 # 시/도 선택에 따른 중심 좌표 및 Zoom 설정
 sido_centers = {
