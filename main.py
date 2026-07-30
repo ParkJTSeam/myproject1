@@ -99,8 +99,20 @@ with st.spinner("전국 인구 데이터를 불러오는 중..."):
     df_pop = load_full_population_data()
     geojson_data = load_geojson()
 
+# GeoJSON 데이터에서 사용 가능한 시군구 코드 집합 추출
+geojson_codes = set()
+if geojson_data and 'features' in geojson_data:
+    for feature in geojson_data['features']:
+        code = feature.get('properties', {}).get('코드')
+        if code:
+            geojson_codes.add(str(code))
+
+# GeoJSON 코드와 매칭되는 인구 데이터 필터링
+valid_df = df_pop[df_pop['sigungu_code'].astype(str).isin(geojson_codes)]
+valid_sido_list = sorted(list(valid_df['시도'].dropna().unique()))
+
 # 세션 상태 초기화
-if 'selected_sido' not in st.session_state:
+if 'selected_sido' not in st.session_state or st.session_state.selected_sido not in (["전체"] + valid_sido_list):
     st.session_state.selected_sido = "전체"
 if 'selected_sigungu' not in st.session_state:
     st.session_state.selected_sigungu = "전체"
@@ -108,8 +120,6 @@ if 'selected_year' not in st.session_state:
     st.session_state.selected_year = int(df_pop['연도'].max())
 if 'selected_age_group' not in st.session_state:
     st.session_state.selected_age_group = "10대"
-if 'selected_compare_mode' not in st.session_state:
-    st.session_state.selected_compare_mode = "선택 연령대 보기"
 
 # --- [메인 화면 구성] ---
 st.title("🗺️ 전국 시군구 고령화 지도 & 연령대별 인구 탐색기")
@@ -123,12 +133,9 @@ sido_centers = {
     "광주광역시": {"lat": 35.1595, "lon": 126.8526, "zoom": 10.0},
     "대전광역시": {"lat": 36.3504, "lon": 127.3845, "zoom": 10.0},
     "울산광역시": {"lat": 35.5384, "lon": 129.3114, "zoom": 9.8},
-    "세종특별자치시": {"lat": 36.4800, "lon": 127.2890, "zoom": 10.5},
     "경기도": {"lat": 37.4138, "lon": 127.5183, "zoom": 8.2},
-    "강원특별자치도": {"lat": 37.8228, "lon": 128.1555, "zoom": 7.8},
     "충청북도": {"lat": 36.6357, "lon": 127.4912, "zoom": 8.2},
     "충청남도": {"lat": 36.5184, "lon": 126.8000, "zoom": 8.3},
-    "전북특별자치도": {"lat": 35.7175, "lon": 127.1530, "zoom": 8.3},
     "전라남도": {"lat": 34.8161, "lon": 126.4629, "zoom": 8.0},
     "경상북도": {"lat": 36.5760, "lon": 128.5056, "zoom": 7.8},
     "경상남도": {"lat": 35.4606, "lon": 128.2132, "zoom": 8.2},
@@ -136,7 +143,7 @@ sido_centers = {
 }
 
 view_config = sido_centers.get(st.session_state.selected_sido, sido_centers["전체"])
-df_current_year = df_pop[df_pop['연도'] == st.session_state.selected_year].copy()
+df_current_year = valid_df[valid_df['연도'] == st.session_state.selected_year].copy()
 
 bins = [0, 19, 23, 28, 38, 100]
 labels = ['19% 미만', '19% 이상 ~ 23% 미만', '23% 이상 ~ 28% 미만', '28% 이상 ~ 38% 미만', '38% 이상']
@@ -161,122 +168,62 @@ if st.session_state.selected_sido != "전체":
 else:
     map_data = df_current_year
 
-# GeoJSON 데이터 내 코드 집합 추출
-geojson_codes = set()
-if geojson_data and 'features' in geojson_data:
-    for feature in geojson_data['features']:
-        code = feature.get('properties', {}).get('코드')
-        if code:
-            geojson_codes.add(str(code))
+fig = px.choropleth_mapbox(
+    map_data,
+    geojson=geojson_data,
+    locations='sigungu_code',
+    featureidkey="properties.코드",
+    color='ratio_group',
+    color_discrete_map=green_color_discrete_map,
+    category_orders={'ratio_group': labels},
+    center={"lat": view_config["lat"], "lon": view_config["lon"]},
+    zoom=view_config["zoom"],
+    hover_name='시군구',
+    hover_data={
+        '시도': True,
+        'elderly_ratio': ':.1f%',
+        'sigungu_code': False,
+        'ratio_group': False
+    },
+    labels={'elderly_ratio': '고령화율', 'ratio_group': '고령화 비율 구간'}
+)
 
-# 지도 데이터 매칭 여부 검증 (GeoJSON에 존재하는 시군구 코드가 한 개 이상 포함되어 있는지)
-has_valid_map_data = any(str(code) in geojson_codes for code in map_data['sigungu_code'].unique())
-
-if geojson_data and has_valid_map_data:
-    fig = px.choropleth_mapbox(
-        map_data,
-        geojson=geojson_data,
-        locations='sigungu_code',
-        featureidkey="properties.코드",
-        color='ratio_group',
-        color_discrete_map=green_color_discrete_map,
-        category_orders={'ratio_group': labels},
-        center={"lat": view_config["lat"], "lon": view_config["lon"]},
-        zoom=view_config["zoom"],
-        hover_name='시군구',
-        hover_data={
-            '시도': True,
-            'elderly_ratio': ':.1f%',
-            'sigungu_code': False,
-            'ratio_group': False
-        },
-        labels={'elderly_ratio': '고령화율', 'ratio_group': '고령화 비율 구간'}
+fig.update_layout(
+    mapbox_style="white-bg",
+    mapbox_layers=[{
+        "below": 'traces',
+        "sourcetype": "raster",
+        "source": ["data:image/png;base64,iVBORw0KGgoAAAANSU50EUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORUS5CYII="]
+    }],
+    margin={"r": 0, "t": 10, "l": 0, "b": 10},
+    transition_duration=3000,
+    legend=dict(
+        title=dict(text="<b>고령화율 구간</b>", font=dict(color="#000000", size=13)),
+        font=dict(color="#000000", size=12),
+        yanchor="top", y=0.98, xanchor="left", x=0.02,
+        bgcolor="rgba(255, 255, 255, 0.9)"
     )
+)
 
-    fig.update_layout(
-        mapbox_style="white-bg",
-        mapbox_layers=[{
-            "below": 'traces',
-            "sourcetype": "raster",
-            "source": ["data:image/png;base64,iVBORw0KGgoAAAANSU50EUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="]
-        }],
-        margin={"r": 0, "t": 10, "l": 0, "b": 10},
-        transition_duration=3000,
-        legend=dict(
-            title=dict(text="<b>고령화율 구간</b>", font=dict(color="#000000", size=13)),
-            font=dict(color="#000000", size=12),
-            yanchor="top", y=0.98, xanchor="left", x=0.02,
-            bgcolor="rgba(255, 255, 255, 0.9)"
-        )
-    )
+fig.update_traces(
+    marker_line_width=0.8,
+    marker_line_color="#222222"
+)
 
-    fig.update_traces(
-        marker_line_width=0.8,
-        marker_line_color="#222222"
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
-
-else:
-    # 🚨 지도 데이터가 없거나 매칭되지 않을 때 표시되는 익살스러운 메시지 & CSS 애니메이션
-    no_map_html = f"""
-    <style>
-    @keyframes magnifyingGlass {{
-        0% {{ transform: scale(1) translate(0, 0) rotate(0deg); }}
-        25% {{ transform: scale(1.15) translate(-15px, -10px) rotate(-15deg); }}
-        50% {{ transform: scale(1.05) translate(15px, 10px) rotate(15deg); }}
-        75% {{ transform: scale(1.2) translate(-10px, 10px) rotate(-10deg); }}
-        100% {{ transform: scale(1) translate(0, 0) rotate(0deg); }}
-    }}
-    .no-map-box {{
-        background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%);
-        border: 3px dashed #ff9800;
-        border-radius: 20px;
-        padding: 35px 20px;
-        text-align: center;
-        margin: 15px 0;
-        box-shadow: 0 8px 20px rgba(255,152,0,0.15);
-    }}
-    .no-map-emoji {{
-        font-size: 65px;
-        display: inline-block;
-        animation: magnifyingGlass 2.5s infinite ease-in-out;
-    }}
-    .no-map-title {{
-        font-size: 23px;
-        font-weight: 800;
-        color: #e65100;
-        margin-top: 15px;
-    }}
-    .no-map-desc {{
-        font-size: 15px;
-        color: #bf360c;
-        margin-top: 8px;
-    }}
-    </style>
-    <div class="no-map-box">
-        <div class="no-map-emoji">🔍🗺️💨</div>
-        <div class="no-map-title">앗! [{st.session_state.selected_sido}] 지도가 가출했어요!</div>
-        <div class="no-map-desc">
-            해당 지역의 지도 경계 데이터(GeoJSON)를 열심히 탐색 중입니다.<br>
-            <b>아래 도표 정보는 정상 제공되니</b> 차트를 확인하시거나 <b>다른 시·도를 선택</b>해 주세요! 🕵️‍♂️
-        </div>
-    </div>
-    """
-    st.components.v1.html(no_map_html, height=230)
+st.plotly_chart(fig, use_container_width=True)
 
 
 # --- [지도 하단 선택 드롭다운 UI] ---
-st.markdown("### 📍 지역, 연도, 연령대 및 고령인구 비교 옵션")
+st.markdown("### 📍 지역, 연도 및 연령대 선택 옵션")
 
-col_sido, col_sigungu, col_year, col_age, col_compare = st.columns(5)
+col_sido, col_sigungu, col_year, col_age = st.columns(4)
 
 with col_sido:
-    sido_list = ["전체"] + sorted(list(df_pop['시도'].dropna().unique()))
+    sido_options = ["전체"] + valid_sido_list
     selected_sido = st.selectbox(
         "시·도 선택", 
-        sido_list, 
-        index=sido_list.index(st.session_state.selected_sido)
+        sido_options, 
+        index=sido_options.index(st.session_state.selected_sido)
     )
     if selected_sido != st.session_state.selected_sido:
         st.session_state.selected_sido = selected_sido
@@ -285,7 +232,7 @@ with col_sido:
 
 with col_sigungu:
     if st.session_state.selected_sido != "전체":
-        available_sigungu = ["전체"] + sorted(list(df_pop[df_pop['시도'] == st.session_state.selected_sido]['시군구'].dropna().unique()))
+        available_sigungu = ["전체"] + sorted(list(valid_df[valid_df['시도'] == st.session_state.selected_sido]['시군구'].dropna().unique()))
     else:
         available_sigungu = ["전체"]
     
@@ -320,28 +267,16 @@ with col_age:
         st.session_state.selected_age_group = selected_age_group
         st.rerun()
 
-with col_compare:
-    compare_mode_list = ["선택 연령대 보기", "👵 고령인구 VS 🧑 그 외 연령"]
-    selected_compare_mode = st.selectbox(
-        "비교 분석 모드",
-        compare_mode_list,
-        index=compare_mode_list.index(st.session_state.selected_compare_mode)
-    )
-    if selected_compare_mode != st.session_state.selected_compare_mode:
-        st.session_state.selected_compare_mode = selected_compare_mode
-        st.rerun()
-
 st.markdown("---")
 
 # --- [상세 인구 분석 및 결과 표시] ---
 curr_age_group = st.session_state.selected_age_group
-compare_mode = st.session_state.selected_compare_mode
 
 if st.session_state.selected_sido != "전체" and st.session_state.selected_sigungu != "전체":
-    target_data = df_pop[
-        (df_pop['시도'] == st.session_state.selected_sido) & 
-        (df_pop['시군구'] == st.session_state.selected_sigungu) & 
-        (df_pop['연도'] == st.session_state.selected_year)
+    target_data = valid_df[
+        (valid_df['시도'] == st.session_state.selected_sido) & 
+        (valid_df['시군구'] == st.session_state.selected_sigungu) & 
+        (valid_df['연도'] == st.session_state.selected_year)
     ]
     
     if not target_data.empty:
@@ -352,213 +287,196 @@ if st.session_state.selected_sido != "전체" and st.session_state.selected_sigu
         elderly_ratio = row['elderly_ratio']
         other_ratio = row['other_ratio']
 
-        # 모드 1: 고령인구 VS 그 외 연령 인구 비교 모드
-        if compare_mode == "👵 고령인구 VS 🧑 그 외 연령":
-            st.subheader(f"⚖️ {row['시도']} {row['시군구']} ({st.session_state.selected_year}년) 고령인구 VS 그 외 연령 비율")
-            
-            m_col1, m_col2, m_col3 = st.columns(3)
-            m_col1.metric("총 인구수", f"{total_pop:,} 명")
-            m_col2.metric("👵 65세 이상 고령인구", f"{elderly_pop:,} 명 ({elderly_ratio:.1f}%)")
-            m_col3.metric("🧑 65세 미만 그 외 인구", f"{other_pop:,} 명 ({other_ratio:.1f}%)")
-            
-            # 고령화 단계 판정 및 익살스러운 캐릭터 애니메이션 바 설정
-            if elderly_ratio >= 20.0:
-                status_title = "👵🚨 [초고령사회] 으악! 지팡이 춤판이 벌어졌어요!"
-                status_desc = f"고령인구 비율이 무려 {elderly_ratio:.1f}%! 경로당 잔칫날입니다!"
-                badge_bg = "#ffebee"
-                badge_border = "#ef5350"
-                anim_class = "super-old-bounce"
-                emoji_main = "👵🕺"
-            elif elderly_ratio >= 14.0:
-                status_title = "🧓 짚신도 짝이 있는 [고령사회]"
-                status_desc = f"고령인구 비율 {elderly_ratio:.1f}%. 어르신들의 돋보기 파워가 느껴집니다!"
-                badge_bg = "#fff8e1"
-                badge_border = "#ffca28"
-                anim_class = "old-shake"
-                emoji_main = "🧓👓"
-            elif elderly_ratio >= 7.0:
-                status_title = "👴 [고령화사회] 은근슬쩍 머리가 희끗희끗!"
-                status_desc = f"고령인구 비율 {elderly_ratio:.1f}%. 이제 슬슬 안마의자가 필요해집니다."
-                badge_bg = "#f1f8e9"
-                badge_border = "#9ccc65"
-                anim_class = "mild-wiggle"
-                emoji_main = "👴🌱"
-            else:
-                status_title = "👶⚡ [젊은 도시] 파릇파릇 에너지가 넘쳐나요!"
-                status_desc = f"고령인구 비율 {elderly_ratio:.1f}%. 청년들의 댄스 배틀 구역!"
-                badge_bg = "#e3f2fd"
-                badge_border = "#42a5f5"
-                anim_class = "young-jump"
-                emoji_main = "🏃⚡"
+        target_total_pop = int(row[f'{curr_age_group}_total_pop'])
+        target_male_pop = int(row[f'{curr_age_group}_남_pop'])
+        target_female_pop = int(row[f'{curr_age_group}_여_pop'])
+        
+        target_ratio = (target_total_pop / total_pop * 100) if total_pop > 0 else 0
+        male_ratio = (target_male_pop / total_pop * 100) if total_pop > 0 else 0
+        female_ratio = (target_female_pop / total_pop * 100) if total_pop > 0 else 0
+        
+        # 1. 지표 요약 (Metric)
+        st.subheader(f"📊 {row['시도']} {row['시군구']} ({st.session_state.selected_year}년) 인구 분석")
+        
+        m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+        m_col1.metric("전체 인구수", f"{total_pop:,} 명")
+        m_col2.metric(f"{curr_age_group} 인구수", f"{target_total_pop:,} 명 ({target_ratio:.1f}%)")
+        m_col3.metric("👴 65세 이상 고령인구", f"{elderly_pop:,} 명 ({elderly_ratio:.1f}%)")
+        m_col4.metric("🧑 65세 미만 그 외 인구", f"{other_pop:,} 명 ({other_ratio:.1f}%)")
+        
+        # 2. 고령화 단계 판정 및 익살스러운 애니메이션 배지
+        if elderly_ratio >= 20.0:
+            status_title = "👵🚨 [초고령사회] 으악! 지팡이 춤판이 벌어졌어요!"
+            status_desc = f"고령인구 비율이 무려 {elderly_ratio:.1f}%! 경로당 잔칫날입니다!"
+            badge_bg = "#ffebee"
+            badge_border = "#ef5350"
+            anim_class = "super-old-bounce"
+            emoji_main = "👵🕺"
+        elif elderly_ratio >= 14.0:
+            status_title = "🧓 짚신도 짝이 있는 [고령사회]"
+            status_desc = f"고령인구 비율 {elderly_ratio:.1f}%. 어르신들의 돋보기 파워가 느껴집니다!"
+            badge_bg = "#fff8e1"
+            badge_border = "#ffca28"
+            anim_class = "old-shake"
+            emoji_main = "🧓👓"
+        elif elderly_ratio >= 7.0:
+            status_title = "👴 [고령화사회] 은근슬쩍 머리가 희끗희끗!"
+            status_desc = f"고령인구 비율 {elderly_ratio:.1f}%. 이제 슬슬 안마의자가 필요해집니다."
+            badge_bg = "#f1f8e9"
+            badge_border = "#9ccc65"
+            anim_class = "mild-wiggle"
+            emoji_main = "👴🌱"
+        else:
+            status_title = "👶⚡ [젊은 도시] 파릇파릇 에너지가 넘쳐나요!"
+            status_desc = f"고령인구 비율 {elderly_ratio:.1f}%. 청년들의 댄스 배틀 구역!"
+            badge_bg = "#e3f2fd"
+            badge_border = "#42a5f5"
+            anim_class = "young-jump"
+            emoji_main = "🏃⚡"
 
-            # 익살스러운 CSS 키프레임 애니메이션 적용
-            anim_css = f"""
-            <style>
-            @keyframes superBounce {{
-                0%, 100% {{ transform: translateY(0) rotate(0deg) scale(1); }}
-                25% {{ transform: translateY(-12px) rotate(-8deg) scale(1.08); }}
-                50% {{ transform: translateY(0) rotate(8deg) scale(0.95); }}
-                75% {{ transform: translateY(-6px) rotate(-4deg) scale(1.03); }}
-            }}
-            @keyframes oldShake {{
-                0%, 100% {{ transform: translateX(0); }}
-                20% {{ transform: translateX(-6px) rotate(-3deg); }}
-                40% {{ transform: translateX(6px) rotate(3deg); }}
-                60% {{ transform: translateX(-4px); }}
-                80% {{ transform: translateX(4px); }}
-            }}
-            @keyframes mildWiggle {{
-                0%, 100% {{ transform: rotate(0deg); }}
-                50% {{ transform: rotate(5deg) scale(1.04); }}
-            }}
-            @keyframes youngJump {{
-                0%, 100% {{ transform: translateY(0) scale(1); }}
-                50% {{ transform: translateY(-16px) scale(1.15); }}
-            }}
-            
-            .super-old-bounce {{ animation: superBounce 1.2s infinite ease-in-out; display: inline-block; }}
-            .old-shake {{ animation: oldShake 1.5s infinite ease-in-out; display: inline-block; }}
-            .mild-wiggle {{ animation: mildWiggle 2s infinite ease-in-out; display: inline-block; }}
-            .young-jump {{ animation: youngJump 0.8s infinite ease-in-out; display: inline-block; }}
-            
-            .funny-container {{
-                background-color: {badge_bg};
-                border: 3px solid {badge_border};
-                border-radius: 16px;
-                padding: 20px;
-                text-align: center;
-                margin-top: 15px;
-                box-shadow: 0 4px 15px rgba(0,0,0,0.08);
-            }}
-            .funny-emoji {{
-                font-size: 50px;
-                margin-bottom: 10px;
-            }}
-            .funny-title {{
-                font-size: 22px;
-                font-weight: bold;
-                color: #222222;
-                margin-bottom: 5px;
-            }}
-            .funny-desc {{
-                font-size: 15px;
-                color: #555555;
-            }}
-            </style>
-            
-            <div class="funny-container">
-                <div class="funny-emoji {anim_class}">{emoji_main}</div>
-                <div class="funny-title">{status_title}</div>
-                <div class="funny-desc">{status_desc}</div>
-            </div>
-            """
-            st.components.v1.html(anim_css, height=220)
-            
-            # 비율 비교 파이 차트 시각화
+        anim_css = f"""
+        <style>
+        @keyframes superBounce {{
+            0%, 100% {{ transform: translateY(0) rotate(0deg) scale(1); }}
+            25% {{ transform: translateY(-12px) rotate(-8deg) scale(1.08); }}
+            50% {{ transform: translateY(0) rotate(8deg) scale(0.95); }}
+            75% {{ transform: translateY(-6px) rotate(-4deg) scale(1.03); }}
+        }}
+        @keyframes oldShake {{
+            0%, 100% {{ transform: translateX(0); }}
+            20% {{ transform: translateX(-6px) rotate(-3deg); }}
+            40% {{ transform: translateX(6px) rotate(3deg); }}
+            60% {{ transform: translateX(-4px); }}
+            80% {{ transform: translateX(4px); }}
+        }}
+        @keyframes mildWiggle {{
+            0%, 100% {{ transform: rotate(0deg); }}
+            50% {{ transform: rotate(5deg) scale(1.04); }}
+        }}
+        @keyframes youngJump {{
+            0%, 100% {{ transform: translateY(0) scale(1); }}
+            50% {{ transform: translateY(-16px) scale(1.15); }}
+        }}
+        
+        .super-old-bounce {{ animation: superBounce 1.2s infinite ease-in-out; display: inline-block; }}
+        .old-shake {{ animation: oldShake 1.5s infinite ease-in-out; display: inline-block; }}
+        .mild-wiggle {{ animation: mildWiggle 2s infinite ease-in-out; display: inline-block; }}
+        .young-jump {{ animation: youngJump 0.8s infinite ease-in-out; display: inline-block; }}
+        
+        .funny-container {{
+            background-color: {badge_bg};
+            border: 3px solid {badge_border};
+            border-radius: 16px;
+            padding: 18px;
+            text-align: center;
+            margin: 15px 0 25px 0;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.08);
+        }}
+        .funny-emoji {{
+            font-size: 45px;
+            margin-bottom: 8px;
+        }}
+        .funny-title {{
+            font-size: 21px;
+            font-weight: bold;
+            color: #222222;
+            margin-bottom: 4px;
+        }}
+        .funny-desc {{
+            font-size: 14px;
+            color: #555555;
+        }}
+        </style>
+        
+        <div class="funny-container">
+            <div class="funny-emoji {anim_class}">{emoji_main}</div>
+            <div class="funny-title">{status_title}</div>
+            <div class="funny-desc">{status_desc}</div>
+        </div>
+        """
+        st.components.v1.html(anim_css, height=195)
+        
+        # 3. 고령인구 vs 그 외 연령 비율 파이차트 & 픽토그램 2열 배치
+        c_left, c_right = st.columns(2)
+        
+        with c_left:
             df_compare_pie = pd.DataFrame({
                 '구분': ['65세 이상 고령인구', '65세 미만 그 외 인구'],
                 '인구수': [elderly_pop, other_pop]
             })
-            
             fig_pie = px.pie(
                 df_compare_pie, 
                 names='구분', 
                 values='인구수',
-                title=f"{row['시도']} {row['시군구']} 고령인구 vs 그 외 인구 비율 (%)",
+                title=f"⚖️ 고령인구 vs 그 외 인구 비율 (%)",
                 color='구분',
                 color_discrete_map={'65세 이상 고령인구': '#d7301f', '65세 미만 그 외 인구': '#31a354'},
                 hole=0.4
             )
-            fig_pie.update_traces(textinfo='percent+label+value')
+            fig_pie.update_traces(textinfo='percent+label')
             st.plotly_chart(fig_pie, use_container_width=True)
 
-        # 모드 2: 선택 연령대 상세 분석 모드
-        else:
-            target_total_pop = int(row[f'{curr_age_group}_total_pop'])
-            target_male_pop = int(row[f'{curr_age_group}_남_pop'])
-            target_female_pop = int(row[f'{curr_age_group}_여_pop'])
-            
-            target_ratio = (target_total_pop / total_pop * 100) if total_pop > 0 else 0
-            male_ratio = (target_male_pop / total_pop * 100) if total_pop > 0 else 0
-            female_ratio = (target_female_pop / total_pop * 100) if total_pop > 0 else 0
-            
-            st.subheader(f"📊 {row['시도']} {row['시군구']} ({st.session_state.selected_year}년) {curr_age_group} 인구 분석")
-            
-            m_col1, m_col2, m_col3, m_col4 = st.columns(4)
-            m_col1.metric("총 인구수", f"{total_pop:,} 명")
-            m_col2.metric(f"{curr_age_group} 총 인구수", f"{target_total_pop:,} 명 ({target_ratio:.1f}%)")
-            m_col3.metric(f"남성 {curr_age_group} 인구수", f"{target_male_pop:,} 명 ({male_ratio:.1f}%)")
-            m_col4.metric(f"여성 {curr_age_group} 인구수", f"{target_female_pop:,} 명 ({female_ratio:.1f}%)")
-            
-            st.write(f"#### 👦👧 {curr_age_group} 성별 인구 비율 픽토그램 (아이콘 1개 = 0.5%)")
-            
+        with c_right:
+            st.write(f"#### 👦👧 {curr_age_group} 성별 인구 비율 픽토그램")
             male_icons = int(round(male_ratio * 2))
             female_icons = int(round(female_ratio * 2))
             
-            pic_col1, pic_col2 = st.columns(2)
-            
-            with pic_col1:
-                st.markdown(f"**👦 남성 {curr_age_group} 비율 ({male_ratio:.1f}%)**")
-                male_html = "<div style='font-size: 22px; line-height: 1.5; background-color: #eef6ff; padding: 12px; border-radius: 8px;'>"
+            p_col1, p_col2 = st.columns(2)
+            with p_col1:
+                st.markdown(f"**👦 남성 ({male_ratio:.1f}%)**")
+                male_html = "<div style='font-size: 18px; line-height: 1.4; background-color: #eef6ff; padding: 10px; border-radius: 8px;'>"
                 for i in range(1, 41):
-                    if i <= male_icons:
-                        male_html += "👦 "
-                    else:
-                        male_html += "<span style='opacity: 0.15;'>⚪</span> "
-                    if i % 10 == 0:
-                        male_html += "<br>"
+                    male_html += "👦 " if i <= male_icons else "<span style='opacity: 0.15;'>⚪</span> "
+                    if i % 10 == 0: male_html += "<br>"
                 male_html += "</div>"
-                st.components.v1.html(male_html, height=180)
+                st.components.v1.html(male_html, height=160)
 
-            with pic_col2:
-                st.markdown(f"**👧 여성 {curr_age_group} 비율 ({female_ratio:.1f}%)**")
-                female_html = "<div style='font-size: 22px; line-height: 1.5; background-color: #fdeef4; padding: 12px; border-radius: 8px;'>"
+            with p_col2:
+                st.markdown(f"**👧 여성 ({female_ratio:.1f}%)**")
+                female_html = "<div style='font-size: 18px; line-height: 1.4; background-color: #fdeef4; padding: 10px; border-radius: 8px;'>"
                 for i in range(1, 41):
-                    if i <= female_icons:
-                        female_html += "👧 "
-                    else:
-                        female_html += "<span style='opacity: 0.15;'>⚪</span> "
-                    if i % 10 == 0:
-                        female_html += "<br>"
+                    female_html += "👧 " if i <= female_icons else "<span style='opacity: 0.15;'>⚪</span> "
+                    if i % 10 == 0: female_html += "<br>"
                 female_html += "</div>"
-                st.components.v1.html(female_html, height=180)
+                st.components.v1.html(female_html, height=160)
+
+        # 4. 세부 연령별/성별 인구 분포 막대그래프
+        with st.expander(f"🔍 [상세보기] {curr_age_group} 세부 연령별·성별 인구 그래프 보기", expanded=True):
+            if curr_age_group == "70대 이상":
+                age_range_list = list(range(70, 80))
+            else:
+                start_age = int(curr_age_group.replace("대", ""))
+                age_range_list = list(range(start_age, start_age + 10))
                 
-            with st.expander(f"🔍 [상세보기] {curr_age_group} 세부 연령별·성별 인구 그래프 보기"):
-                if curr_age_group == "70대 이상":
-                    age_range_list = list(range(70, 80))
-                else:
-                    start_age = int(curr_age_group.replace("대", ""))
-                    age_range_list = list(range(start_age, start_age + 10))
-                    
-                ages = [f"{a}세" for a in age_range_list]
-                male_counts = [row.get(f'남_{a}세', 0) for a in age_range_list]
-                female_counts = [row.get(f'여_{a}세', 0) for a in age_range_list]
-                
-                df_detail = pd.DataFrame({
-                    '연령': ages + ages,
-                    '인구수': male_counts + female_counts,
-                    '성별': ['남성'] * len(ages) + ['여성'] * len(ages)
-                })
-                
-                fig_detail = px.bar(
-                    df_detail, 
-                    x='연령', 
-                    y='인구수', 
-                    color='성별', 
-                    barmode='group',
-                    title=f"{row['시도']} {row['시군구']} {curr_age_group} 세부 연령별 인구 분포",
-                    color_discrete_map={'남성': '#2b5c8f', '여성': '#d95f87'},
-                    text_auto=',d'
-                )
-                
-                fig_detail.update_layout(
-                    xaxis_title="연령",
-                    yaxis_title="인구수(명)",
-                    legend_title="성별",
-                    margin=dict(l=20, r=20, t=50, b=20)
-                )
-                
-                st.plotly_chart(fig_detail, use_container_width=True)
+            ages = [f"{a}세" for a in age_range_list]
+            male_counts = [row.get(f'남_{a}세', 0) for a in age_range_list]
+            female_counts = [row.get(f'여_{a}세', 0) for a in age_range_list]
+            
+            df_detail = pd.DataFrame({
+                '연령': ages + ages,
+                '인구수': male_counts + female_counts,
+                '성별': ['남성'] * len(ages) + ['여성'] * len(ages)
+            })
+            
+            fig_detail = px.bar(
+                df_detail, 
+                x='연령', 
+                y='인구수', 
+                color='성별', 
+                barmode='group',
+                title=f"{row['시도']} {row['시군구']} {curr_age_group} 세부 연령별 인구 분포",
+                color_discrete_map={'남성': '#2b5c8f', '여성': '#d95f87'},
+                text_auto=',d'
+            )
+            
+            fig_detail.update_layout(
+                xaxis_title="연령",
+                yaxis_title="인구수(명)",
+                legend_title="성별",
+                margin=dict(l=20, r=20, t=50, b=20)
+            )
+            
+            st.plotly_chart(fig_detail, use_container_width=True)
 
 elif st.session_state.selected_sido != "전체":
     st.info(f"👉 위의 드롭다운에서 **[{st.session_state.selected_sido}]** 내의 **시·군·구**를 선택하시면 선택하신 지역의 분석 결과를 확인하실 수 있습니다.")
