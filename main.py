@@ -6,15 +6,15 @@ import plotly.express as px
 
 # 1. 페이지 기본 설정
 st.set_page_config(
-    page_title="전국 고령화 & 10대 인구 탐색기",
+    page_title="전국 고령화 & 연령구간별 인구 탐색기",
     page_icon="🗺️",
     layout="wide"
 )
 
-# 2. 데이터 로딩 함수 (전체 연도 데이터 활용)
+# 2. 데이터 로딩 함수 (전체 연도 및 전체 연령 데이터 가공)
 @st.cache_data
 def load_full_population_data():
-    """전체 연도의 인구 데이터를 불러오고 가공합니다."""
+    """전체 연도의 인구 데이터를 불러와 10대~80대 이상 연령 구간별로 집계합니다."""
     url = "https://raw.githubusercontent.com/greatsong/modudata/main/data/population_yearly.csv.gz"
     
     # 코드는 5자리 시군구 조회를 위해 문자열(str) 형태로 로드
@@ -23,10 +23,10 @@ def load_full_population_data():
     # 시군구 코드(5자리) 생성
     df['sigungu_code'] = df['코드'].str.slice(0, 5)
     
-    # 전체/노인/10대 인구 열 구분
+    # 전체/노인/연령대별 인구 열 구분
     total_pop_cols = [col for col in df.columns if col.startswith('계_')]
     
-    # 65세 이상 열
+    # 65세 이상 고령 인구 열
     elderly_cols = []
     for col in total_pop_cols:
         age_str = col.replace('계_', '').replace('세', '').replace(' 이상', '')
@@ -36,40 +36,55 @@ def load_full_population_data():
         elif col == '계_100세 이상':
             elderly_cols.append(col)
             
-    # 전체 및 65세 이상 인구 합산
+    # 전체 및 고령 인구 합산
     df['total_pop'] = df[total_pop_cols].sum(axis=1)
     df['elderly_pop'] = df[elderly_cols].sum(axis=1)
     
-    # 10대(10~19세) 남/여 합산 열
-    male_teen_cols = [f'남_{age}세' for age in range(10, 20)]
-    female_teen_cols = [f'여_{age}세' for age in range(10, 20)]
+    # 연령 구간 정의 (10대, 20대, 30대, 40대, 50대, 60대, 70대 이상)
+    age_groups = {
+        '10대': range(10, 20),
+        '20대': range(20, 30),
+        '30대': range(30, 40),
+        '40대': range(40, 50),
+        '50대': range(50, 60),
+        '60대': range(60, 70),
+        '70대 이상': range(70, 101)
+    }
     
-    df['male_teen_pop'] = df[male_teen_cols].sum(axis=1)
-    df['female_teen_pop'] = df[female_teen_cols].sum(axis=1)
-    df['teen_pop'] = df['male_teen_pop'] + df['female_teen_pop']
+    for group_name, age_range in age_groups.items():
+        m_cols = [f'남_{age}세' for age in age_range if f'남_{age}세' in df.columns]
+        f_cols = [f'여_{age}세' for age in age_range if f'여_{age}세' in df.columns]
+        if group_name == '70대 이상' and '남_100세 이상' in df.columns:
+            m_cols.append('남_100세 이상')
+            f_cols.append('여_100세 이상')
+            
+        df[f'{group_name}_남_pop'] = df[m_cols].sum(axis=1)
+        df[f'{group_name}_여_pop'] = df[f_cols].sum(axis=1)
+        df[f'{group_name}_total_pop'] = df[f'{group_name}_남_pop'] + df[f'{group_name}_여_pop']
     
-    # 시군구 단위로 집계
+    # 시군구 단위 집계 사전
     agg_dict = {
         '시도': 'first',
         '시군구': 'first',
         'total_pop': 'sum',
-        'elderly_pop': 'sum',
-        'teen_pop': 'sum',
-        'male_teen_pop': 'sum',
-        'female_teen_pop': 'sum'
+        'elderly_pop': 'sum'
     }
     
-    # 10세~19세 개별 세분화 열 추가
-    for age in range(10, 20):
-        agg_dict[f'계_{age}세'] = 'sum'
-        agg_dict[f'남_{age}세'] = 'sum'
-        agg_dict[f'여_{age}세'] = 'sum'
+    for group_name in age_groups.keys():
+        agg_dict[f'{group_name}_total_pop'] = 'sum'
+        agg_dict[f'{group_name}_남_pop'] = 'sum'
+        agg_dict[f'{group_name}_여_pop'] = 'sum'
         
+    # 0세~99세 및 100세 이상 세분화 열 추가
+    for age in range(0, 100):
+        if f'계_{age}세' in df.columns: agg_dict[f'계_{age}세'] = 'sum'
+        if f'남_{age}세' in df.columns: agg_dict[f'남_{age}세'] = 'sum'
+        if f'여_{age}세' in df.columns: agg_dict[f'여_{age}세'] = 'sum'
+    
     grouped = df.groupby(['연도', 'sigungu_code']).agg(agg_dict).reset_index()
     
-    # 고령화율(%) 및 10대 비율(%) 계산
+    # 고령화율(%) 계산
     grouped['elderly_ratio'] = (grouped['elderly_pop'] / grouped['total_pop'] * 100).round(1)
-    grouped['teen_ratio'] = (grouped['teen_pop'] / grouped['total_pop'] * 100).round(1)
     
     return grouped
 
@@ -92,11 +107,13 @@ if 'selected_sigungu' not in st.session_state:
     st.session_state.selected_sigungu = "전체"
 if 'selected_year' not in st.session_state:
     st.session_state.selected_year = int(df_pop['연도'].max())
+if 'selected_age_group' not in st.session_state:
+    st.session_state.selected_age_group = "10대"
 
 # --- [메인 화면 구성] ---
-st.title("🗺️ 전국 시군구 고령화 지도 & 10대 인구 탐색기")
+st.title("🗺️ 전국 시군구 고령화 지도 & 연령대별 인구 탐색기")
 
-# 시/도 선택에 따른 중심 좌표 및 Zoom 설정 (확대 애니메이션 효과)
+# 시/도 선택에 따른 중심 좌표 및 Zoom 설정
 sido_centers = {
     "전체": {"lat": 35.8, "lon": 127.8, "zoom": 6.2},
     "서울특별시": {"lat": 37.5665, "lon": 126.9780, "zoom": 9.5},
@@ -134,12 +151,13 @@ df_current_year['ratio_group'] = pd.cut(
     right=False
 )
 
-color_discrete_map = {
-    '19% 미만': '#fef0d9',
-    '19% 이상 ~ 23% 미만': '#fdd49e',
-    '23% 이상 ~ 28% 미만': '#fdbb84',
-    '28% 이상 ~ 38% 미만': '#fc8d59',
-    '38% 이상': '#d7301f'
+# 규칙 3: 지도 표기 색상을 Green 컬러 그라데이션 단계로 변경
+green_color_discrete_map = {
+    '19% 미만': '#edf8e9',
+    '19% 이상 ~ 23% 미만': '#bae4b3',
+    '23% 이상 ~ 28% 미만': '#74c476',
+    '28% 이상 ~ 38% 미만': '#31a354',
+    '38% 이상': '#006d2c'
 }
 
 # 지도 표현용 데이터 필터링
@@ -155,7 +173,7 @@ fig = px.choropleth_mapbox(
     locations='sigungu_code',
     featureidkey="properties.코드",
     color='ratio_group',
-    color_discrete_map=color_discrete_map,
+    color_discrete_map=green_color_discrete_map,
     category_orders={'ratio_group': labels},
     center={"lat": view_config["lat"], "lon": view_config["lon"]},
     zoom=view_config["zoom"],
@@ -169,6 +187,8 @@ fig = px.choropleth_mapbox(
     labels={'elderly_ratio': '고령화율', 'ratio_group': '고령화 비율 구간'}
 )
 
+# 규칙 2: 지도 좌측 상단 범례의 글자 폰트 색상을 검정(#000000)으로 설정
+# 규칙 4: 드롭다운 선택 시 지도 이미지 표시 단계별 애니메이션 시간 설정 (3초 = 3000ms)
 fig.update_layout(
     mapbox_style="white-bg",
     mapbox_layers=[{
@@ -177,27 +197,28 @@ fig.update_layout(
         "source": ["data:image/png;base64,iVBORw0KGgoAAAANSU50EUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="]
     }],
     margin={"r": 0, "t": 10, "l": 0, "b": 10},
-    transition_duration=500,
+    transition_duration=3000,  # 규칙 4: 단계별 애니메이션 3초 (3000ms)
     legend=dict(
-        title=dict(text="<b>고령화율 구간</b>"),
+        title=dict(text="<b>고령화율 구간</b>", font=dict(color="#000000", size=13)),
+        font=dict(color="#000000", size=12),  # 규칙 2: 범례 폰트 검정색
         yanchor="top", y=0.98, xanchor="left", x=0.02,
-        bgcolor="rgba(255, 255, 255, 0.8)"
+        bgcolor="rgba(255, 255, 255, 0.9)"
     )
 )
 
 fig.update_traces(
     marker_line_width=0.8,
-    marker_line_color="#333333"
+    marker_line_color="#222222"
 )
 
 # 지도 출력
 st.plotly_chart(fig, use_container_width=True)
 
 
-# --- [규칙 1: 지도 하단 지역 및 연도 선택 드롭다운] ---
-st.markdown("### 📍 지역 및 연도 선택")
+# --- [규칙 1: 하단 드롭다운에 연령 구간 메뉴 추가] ---
+st.markdown("### 📍 지역, 연도 및 연령 구간 선택")
 
-col_sido, col_sigungu, col_year = st.columns(3)
+col_sido, col_sigungu, col_year, col_age = st.columns(4)
 
 with col_sido:
     sido_list = ["전체"] + sorted(list(df_pop['시도'].dropna().unique()))
@@ -237,9 +258,23 @@ with col_year:
         st.session_state.selected_year = selected_year
         st.rerun()
 
+with col_age:
+    # 규칙 1: 연령 구간 선택 옵션 추가 (10대, 20대, 30대, 40대, 50대, 60대, 70대 이상)
+    age_group_list = ["10대", "20대", "30대", "40대", "50대", "60대", "70대 이상"]
+    selected_age_group = st.selectbox(
+        "연령 구간 선택",
+        age_group_list,
+        index=age_group_list.index(st.session_state.selected_age_group)
+    )
+    if selected_age_group != st.session_state.selected_age_group:
+        st.session_state.selected_age_group = selected_age_group
+        st.rerun()
+
 st.markdown("---")
 
-# --- [10대 인구 현황 및 성별 분리 픽토그램/세부 그래프] ---
+# --- [선택 연령 구간 인구 현황 및 성별 분리 픽토그램/세부 그래프] ---
+curr_age_group = st.session_state.selected_age_group
+
 if st.session_state.selected_sido != "전체" and st.session_state.selected_sigungu != "전체":
     target_data = df_pop[
         (df_pop['시도'] == st.session_state.selected_sido) & 
@@ -250,25 +285,26 @@ if st.session_state.selected_sido != "전체" and st.session_state.selected_sigu
     if not target_data.empty:
         row = target_data.iloc[0]
         total_pop = int(row['total_pop'])
-        male_teen_pop = int(row['male_teen_pop'])
-        female_teen_pop = int(row['female_teen_pop'])
-        teen_pop = int(row['teen_pop'])
         
-        male_ratio = (male_teen_pop / total_pop * 100) if total_pop > 0 else 0
-        female_ratio = (female_teen_pop / total_pop * 100) if total_pop > 0 else 0
-        teen_ratio = (teen_pop / total_pop * 100) if total_pop > 0 else 0
+        target_total_pop = int(row[f'{curr_age_group}_total_pop'])
+        target_male_pop = int(row[f'{curr_age_group}_남_pop'])
+        target_female_pop = int(row[f'{curr_age_group}_여_pop'])
         
-        st.subheader(f"📊 {row['시도']} {row['시군구']} ({st.session_state.selected_year}년) 10대 인구 분석")
+        target_ratio = (target_total_pop / total_pop * 100) if total_pop > 0 else 0
+        male_ratio = (target_male_pop / total_pop * 100) if total_pop > 0 else 0
+        female_ratio = (target_female_pop / total_pop * 100) if total_pop > 0 else 0
+        
+        st.subheader(f"📊 {row['시도']} {row['시군구']} ({st.session_state.selected_year}년) {curr_age_group} 인구 분석")
         
         # 지표 출력
         m_col1, m_col2, m_col3, m_col4 = st.columns(4)
         m_col1.metric("총 인구수", f"{total_pop:,} 명")
-        m_col2.metric("10대 총 인구수", f"{teen_pop:,} 명 ({teen_ratio:.1f}%)")
-        m_col3.metric("남성 10대 인구수", f"{male_teen_pop:,} 명 ({male_ratio:.1f}%)")
-        m_col4.metric("여성 10대 인구수", f"{female_teen_pop:,} 명 ({female_ratio:.1f}%)")
+        m_col2.metric(f"{curr_age_group} 총 인구수", f"{target_total_pop:,} 명 ({target_ratio:.1f}%)")
+        m_col3.metric(f"남성 {curr_age_group} 인구수", f"{target_male_pop:,} 명 ({male_ratio:.1f}%)")
+        m_col4.metric(f"여성 {curr_age_group} 인구수", f"{target_female_pop:,} 명 ({female_ratio:.1f}%)")
         
-        # 규칙 2: 성별 분리 픽토그램 시각화 (아이콘 1개 = 0.5%)
-        st.write("#### 👦👧 10대 성별 인구 비율 픽토그램 (아이콘 1개 = 0.5%)")
+        # 성별 분리 픽토그램 시각화 (아이콘 1개 = 0.5%)
+        st.write(f"#### 👦👧 {curr_age_group} 성별 인구 비율 픽토그램 (아이콘 1개 = 0.5%)")
         
         male_icons = int(round(male_ratio * 2))
         female_icons = int(round(female_ratio * 2))
@@ -276,7 +312,7 @@ if st.session_state.selected_sido != "전체" and st.session_state.selected_sigu
         pic_col1, pic_col2 = st.columns(2)
         
         with pic_col1:
-            st.markdown(f"**👦 남성 10대 비율 ({male_ratio:.1f}%)**")
+            st.markdown(f"**👦 남성 {curr_age_group} 비율 ({male_ratio:.1f}%)**")
             male_html = "<div style='font-size: 22px; line-height: 1.5; background-color: #eef6ff; padding: 12px; border-radius: 8px;'>"
             for i in range(1, 41):
                 if i <= male_icons:
@@ -289,7 +325,7 @@ if st.session_state.selected_sido != "전체" and st.session_state.selected_sigu
             st.components.v1.html(male_html, height=180)
 
         with pic_col2:
-            st.markdown(f"**👧 여성 10대 비율 ({female_ratio:.1f}%)**")
+            st.markdown(f"**👧 여성 {curr_age_group} 비율 ({female_ratio:.1f}%)**")
             female_html = "<div style='font-size: 22px; line-height: 1.5; background-color: #fdeef4; padding: 12px; border-radius: 8px;'>"
             for i in range(1, 41):
                 if i <= female_icons:
@@ -301,16 +337,22 @@ if st.session_state.selected_sido != "전체" and st.session_state.selected_sigu
             female_html += "</div>"
             st.components.v1.html(female_html, height=180)
             
-        # 규칙 3: [상세보기] 메뉴 클릭 시 10세부터 19세까지 세분화 그래프 제공
-        with st.expander("🔍 [상세보기] 10세~19세 연령별·성별 인구 그래프 보기"):
-            ages = [f"{age}세" for age in range(10, 20)]
-            male_counts = [row[f'남_{age}세'] for age in range(10, 20)]
-            female_counts = [row[f'여_{age}세'] for age in range(10, 20)]
+        # [상세보기] 메뉴 클릭 시 세부 연령별 인구 그래프 제공
+        with st.expander(f"🔍 [상세보기] {curr_age_group} 세부 연령별·성별 인구 그래프 보기"):
+            if curr_age_group == "70대 이상":
+                age_range_list = list(range(70, 80))
+            else:
+                start_age = int(curr_age_group.replace("대", ""))
+                age_range_list = list(range(start_age, start_age + 10))
+                
+            ages = [f"{a}세" for a in age_range_list]
+            male_counts = [row.get(f'남_{a}세', 0) for a in age_range_list]
+            female_counts = [row.get(f'여_{a}세', 0) for a in age_range_list]
             
             df_detail = pd.DataFrame({
                 '연령': ages + ages,
                 '인구수': male_counts + female_counts,
-                '성별': ['남성'] * 10 + ['여성'] * 10
+                '성별': ['남성'] * len(ages) + ['여성'] * len(ages)
             })
             
             fig_detail = px.bar(
@@ -319,7 +361,7 @@ if st.session_state.selected_sido != "전체" and st.session_state.selected_sigu
                 y='인구수', 
                 color='성별', 
                 barmode='group',
-                title=f"{row['시도']} {row['시군구']} 10세~19세 연령별 인구 분포",
+                title=f"{row['시도']} {row['시군구']} {curr_age_group} 세부 연령별 인구 분포",
                 color_discrete_map={'남성': '#2b5c8f', '여성': '#d95f87'},
                 text_auto=',d'
             )
@@ -334,6 +376,6 @@ if st.session_state.selected_sido != "전체" and st.session_state.selected_sigu
             st.plotly_chart(fig_detail, use_container_width=True)
 
 elif st.session_state.selected_sido != "전체":
-    st.info(f"👉 위의 드롭다운에서 **[{st.session_state.selected_sido}]** 내의 **시·군·구**를 선택하시면 10대 성별 인구 픽토그램과 세부 그래프를 확인하실 수 있습니다.")
+    st.info(f"👉 위의 드롭다운에서 **[{st.session_state.selected_sido}]** 내의 **시·군·구**를 선택하시면 선택하신 **{curr_age_group}** 성별 인구 픽토그램과 세부 그래프를 확인하실 수 있습니다.")
 else:
-    st.info("👉 지도 하단의 드롭다운에서 **시·도** 및 **시·군·구**를 선택하시면 해당 지역으로 확대되며 상세 10대 인구 분석 정보를 확인하실 수 있습니다.")
+    st.info(f"👉 지도 하단의 드롭다운에서 **시·도** 및 **시·군·구**를 선택하시면 해당 지역으로 확대되며 **{curr_age_group}** 상세 인구 분석 정보를 확인하실 수 있습니다.")
